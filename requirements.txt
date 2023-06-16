@@ -1,1 +1,10 @@
 jupyter
+pandas
+joblib
+markdownify
+datasets
+addict
+peft
+transformers
+nlpaug
+augmenty
