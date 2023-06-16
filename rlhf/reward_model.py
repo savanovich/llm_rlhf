@@ -21,7 +21,6 @@ from transformers.utils import PaddingStrategy
 
 from transformers import logging
 
-from utils import print_gpu_utilization
 
 logging.set_verbosity_error()
 

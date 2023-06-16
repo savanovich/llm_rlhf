@@ -1,11 +1,15 @@
 import argparse
 import logging
+import re
 import sys
 import time
 from collections import defaultdict
 
 import pandas as pd
 from joblib import Parallel, delayed
+from markdownify import markdownify as md
+
+from utils.hugging_face import push_dataset
 
 file_handler = logging.FileHandler(filename='logs/preprocessing.log')
 stdout_handler = logging.StreamHandler(stream=sys.stdout)
@@ -22,6 +26,20 @@ logger = logging.getLogger('preprocessing')
 INPUT_FILE = "data/QueryResults.csv"
 
 
+def lang_callback(el):
+    lang = el['class'][0] if el.has_attr('class') else None
+
+    if not lang is None:
+        lang = lang.split("-")[-1]
+    return lang
+
+
+def html2md(text):
+    text = md(text, code_language_callback=lang_callback)
+    text = re.sub(r"\n\s*\n", "\n\n", text).strip()
+    return text.encode('utf-8', 'replace').decode()
+
+
 def process_question(df_group):
     data_sft = []
     data_rlhf = []
@@ -31,6 +49,8 @@ def process_question(df_group):
     prev_rows = defaultdict(list)
 
     for row_index, row in df_group.iterrows():
+        row['AnswerBody'] = html2md(row['AnswerBody'])
+        row['QuestionBody'] = html2md(row['QuestionBody'])
         data_sft.append({
             'link': row['Post Link'],
             'qid': row['QuestionId'],
@@ -98,10 +118,10 @@ if __name__ == '__main__':
     logger.info('Data SFT %d samples', len(data_sft))
     logger.info('Data RLHF %d samples', len(data_rlhf))
 
-    # logger.info('Uploading sft dataset...')
-    # push_dataset("asavanovich/sft_dataset", data_sft, branch=args.branch)
-    # logger.info('Done')
-    #
-    # logger.info('Uploading rlhf dataset...')
-    # push_dataset("asavanovich/rlhf_dataset", data_rlhf, branch=args.branch)
-    # logger.info('Done')
+    logger.info('Uploading sft dataset...')
+    push_dataset("asavanovich/sft_dataset", data_sft, branch=args.branch)
+    logger.info('Done')
+
+    logger.info('Uploading rlhf dataset...')
+    push_dataset("asavanovich/rlhf_dataset", data_rlhf, branch=args.branch)
+    logger.info('Done')
