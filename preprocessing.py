@@ -4,6 +4,7 @@ import re
 import sys
 import time
 from collections import defaultdict
+from math import log2
 
 import pandas as pd
 from joblib import Parallel, delayed
@@ -23,8 +24,8 @@ logging.basicConfig(
 
 logger = logging.getLogger('preprocessing')
 
-INPUT_FILE = "data/QueryResults.csv"
-
+# REG_CODE_BLOCK = re.compile(r'^(([ \t]*`{3,4})([^\n]*)([\s\S]+?)(^[ \t]*\2))')
+REG_CODE_BLOCK = re.compile(r'^`')
 
 def lang_callback(el):
     lang = el['class'][0] if el.has_attr('class') else None
@@ -38,7 +39,7 @@ def html2md(text):
     text = md(text, code_language_callback=lang_callback)
     text = re.sub(r"\n\s*\n", "\n\n", text).strip()
     return text.encode('utf-8', 'replace').decode()
-
+    # return text
 
 def process_question(df_group):
     data_sft = []
@@ -51,8 +52,14 @@ def process_question(df_group):
     for row_index, row in df_group.iterrows():
         row['AnswerBody'] = html2md(row['AnswerBody'])
         row['QuestionBody'] = html2md(row['QuestionBody'])
+        row['AnswerScore'] = log2(1 + row['AnswerScore']) if row['AnswerScore'] > 0 else -1
+
+        if "```" in row['AnswerBody']:
+            print(re.findall(REG_CODE_BLOCK, row['AnswerBody']))
+        # if "```" in row['QuestionBody']:
+        #     print(re.findall(REG_CODE_BLOCK, row['QuestionBody']))
+
         data_sft.append({
-            'link': row['Post Link'],
             'qid': row['QuestionId'],
             'question': row['QuestionBody'],
             'response_j': row['AnswerBody'],
@@ -65,7 +72,6 @@ def process_question(df_group):
         if len(prev_rows[prev_score]) and prev_score != row['AnswerScore']:
             for prev_row in prev_rows[prev_score]:
                 rlhf_d = {
-                    'link': row['Post Link'],
                     'qid': row['QuestionId'],
 
                     'answer_j': row['AnswerBody'],
@@ -85,10 +91,12 @@ def process_question(df_group):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Raw data preprocessing')
-    parser.add_argument('--branch', dest='branch', type=str, default='main', help='Dataset version for HuggingFace')
+    parser.add_argument('--branch', type=str, default='main', help='Dataset version for HuggingFace')
+    parser.add_argument('--data-file', dest='data_file', type=str, default='data/QueryResults.csv', help='Raw data file')
+    parser.add_argument('--split', type=str, default='train', help='Dataset split type')
     args = parser.parse_args()
 
-    df = pd.read_csv(INPUT_FILE)
+    df = pd.read_csv(args.data_file)
     # print(df.columns)
     # print(df.describe())
     df_grouped = df.sort_values(['QuestionId', 'AnswerScore'], ascending=True).groupby('QuestionId')
@@ -118,10 +126,14 @@ if __name__ == '__main__':
     logger.info('Data SFT %d samples', len(data_sft))
     logger.info('Data RLHF %d samples', len(data_rlhf))
 
-    logger.info('Uploading sft dataset...')
-    push_dataset("asavanovich/sft_dataset", data_sft, branch=args.branch)
-    logger.info('Done')
-
-    logger.info('Uploading rlhf dataset...')
-    push_dataset("asavanovich/rlhf_dataset", data_rlhf, branch=args.branch)
-    logger.info('Done')
+    # logger.info('Uploading sft dataset...')
+    # push_dataset("asavanovich/sft_dataset", data_sft, branch=args.branch, split=args.split)
+    # logger.info('Done')
+    #
+    # logger.info('Uploading reward dataset...')
+    # push_dataset("asavanovich/reward_dataset", data_rlhf[:len(data_rlhf)//2], branch=args.branch, split=args.split)
+    # logger.info('Done')
+    #
+    # logger.info('Uploading rlhf dataset...')
+    # push_dataset("asavanovich/rlhf_dataset", data_rlhf[len(data_rlhf)//2:], branch=args.branch, split=args.split)
+    # logger.info('Done')
