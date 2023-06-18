@@ -16,14 +16,13 @@ from transformers import (
 
 import augmenty
 import spacy
+
+from utils.markdown import find_non_text_intervals, apply_transformation_for_non_code
+
 nlp = spacy.load("en_core_web_md")
-keystroke_error_augmenter = augmenty.load("keystroke_error_v1", level=0.1)
+keystroke_error_augmenter = augmenty.load("keystroke_error_v1", level=0.03)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-REG_CODE_BLOCK = re.compile('^(([ \t]*`{3,4})([^\n]*)([\s\S]+?)(^[ \t]*`{3,4}))', re.MULTILINE)
-REG_CODE = re.compile('(?<=`)[^`\r\n]+(?=`)')
-REG_LINK = re.compile('\[([^\[]+)\](\(.*\))')
 
 
 cfg = addict.Dict(
@@ -115,30 +114,16 @@ class ConstantLengthDataset(IterableDataset):
                     }
 
 
-def find_non_text_intervals(string):
-    code_intervals = []
-    for m in re.finditer(REG_CODE_BLOCK, string):
-        code_intervals.append((m.start(), m.end()))
-    for m in re.finditer(REG_CODE, string):
-        code_intervals.append((m.start(), m.end()))
-    for m in re.finditer(REG_LINK, string):
-        code_intervals.append((m.start(), m.end()))
-    return code_intervals
-
-def apply_augmentation(text):
-    code_intervals = find_non_text_intervals(text)
-
-    prev_end = 0
-    for r in code_intervals:
-        substr = text[prev_end:r[0]]
-        prev_end = r[1]
-        augmented_text = augmenty.texts([substr,], augmenter=keystroke_error_augmenter, nlp=nlp)
-        text[prev_end:r[0]] = augmented_text
+def augment(text):
+    return apply_transformation_for_non_code(text, functions=[
+        lambda s: list(augmenty.texts([s, ], augmenter=keystroke_error_augmenter, nlp=nlp))[0]
+    ])
 
 
+# TODO: check not cached
 def prepare_sample_text(example):
-    question = example['question']
-    response = example['response_j']
+    question = augment(example['question'])
+    response = augment(example['response_j'])
 
     text = f"Question: {question}\n\nAnswer: {response}"
     return text

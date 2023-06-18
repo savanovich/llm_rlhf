@@ -1,15 +1,17 @@
 import argparse
 import json
-import re
 import time
 from collections import defaultdict
 from math import log2
 
 import pandas as pd
 from joblib import Parallel, delayed
+from textblob import TextBlob
+
+from finetuning.training import augment
 from logger_config import *
 from utils.hugging_face import push_dataset
-from utils.markdown import html2md
+from utils.markdown import html2md, apply_transformation_for_non_code
 
 logger = logging.getLogger('preprocessing')
 
@@ -23,14 +25,27 @@ def process_record(df_group):
     prev_rows = defaultdict(list)
 
     for row_index, row in df_group.iterrows():
-        row['AnswerBody'] = html2md(row['AnswerBody'])
         row['QuestionBody'] = html2md(row['QuestionBody'])
+        row['AnswerBody'] = html2md(row['AnswerBody'])
         row['AnswerScore'] = log2(1 + row['AnswerScore']) if row['AnswerScore'] > 0 else -1
 
-        # if "```" in row['AnswerBody']:
-        #     print(re.findall(REG_CODE_BLOCK, row['AnswerBody']))
-        # if "```" in row['QuestionBody']:
-        #     print(re.findall(REG_CODE_BLOCK, row['QuestionBody']))
+        row['QuestionBody'] = apply_transformation_for_non_code(row['QuestionBody'], functions=[
+            # spelling correction
+            lambda s: str(TextBlob(s).correct())
+        ])
+
+        print('='*10, 'ORIGINAL')
+        print(row['AnswerBody'])
+        row['AnswerBody'] = augment(row['AnswerBody'])
+        print('='*10, 'AUGMENTED')
+        print(row['AnswerBody'])
+        print('='*10, 'PREPROCESSING')
+        row['AnswerBody'] = apply_transformation_for_non_code(row['AnswerBody'], functions=[
+            # spelling correction
+            lambda s: str(TextBlob(s).correct())
+        ])
+        print(row['AnswerBody'])
+        print('='*100)
 
         data_sft.append({
             'question_id': row['QuestionId'],
@@ -84,11 +99,11 @@ if __name__ == '__main__':
     parser.add_argument('--push-huggingface', dest='push_huggingface', action='store_true', help='Push to HuggingFace')
     args = parser.parse_args()
 
-    df = pd.read_csv(args.data_file)
-    logger.debug('Found columns: %s', df.columns)
-    logger.debug(df.describe())
+    df = pd.read_csv(args.data_file)[:10]
+    logger.debug('Imported columns: %s', df.columns)
+    # logger.debug(df.describe())
     df_grouped = df.sort_values(['QuestionId', 'AnswerScore'], ascending=True).groupby('QuestionId')
-    logger.debug(df_grouped[['QuestionId', 'AnswerId', 'AnswerScore']].head(10))
+    # logger.debug(df_grouped[['QuestionId', 'AnswerId', 'AnswerScore']].head(10))
 
     logger.info('Data preprocessing...')
     data_sft = []
@@ -110,7 +125,7 @@ if __name__ == '__main__':
             data_sft.extend(out[0])
             data_rlhf.extend(out[1])
 
-    logger.info('Done: %0.5f ms', time.time() - start)
+    logger.info('Done: %0.5fs', time.time() - start)
 
     logger.info('Data SFT %d samples', len(data_sft))
     logger.info('Data RLHF %d samples', len(data_rlhf))
