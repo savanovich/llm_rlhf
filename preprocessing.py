@@ -1,47 +1,20 @@
 import argparse
-import logging
+import json
 import re
-import sys
 import time
 from collections import defaultdict
 from math import log2
 
 import pandas as pd
 from joblib import Parallel, delayed
-from markdownify import markdownify as md
-
+from logger_config import *
 from utils.hugging_face import push_dataset
-
-file_handler = logging.FileHandler(filename='logs/preprocessing.log')
-stdout_handler = logging.StreamHandler(stream=sys.stdout)
-handlers = [file_handler, stdout_handler]
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s',
-    handlers=handlers
-)
+from utils.markdown import html2md
 
 logger = logging.getLogger('preprocessing')
 
-# REG_CODE_BLOCK = re.compile(r'^(([ \t]*`{3,4})([^\n]*)([\s\S]+?)(^[ \t]*\2))')
-REG_CODE_BLOCK = re.compile(r'^`')
 
-def lang_callback(el):
-    lang = el['class'][0] if el.has_attr('class') else None
-
-    if not lang is None:
-        lang = lang.split("-")[-1]
-    return lang
-
-
-def html2md(text):
-    text = md(text, code_language_callback=lang_callback)
-    text = re.sub(r"\n\s*\n", "\n\n", text).strip()
-    return text.encode('utf-8', 'replace').decode()
-    # return text
-
-def process_question(df_group):
+def process_record(df_group):
     data_sft = []
     data_rlhf = []
 
@@ -54,16 +27,18 @@ def process_question(df_group):
         row['QuestionBody'] = html2md(row['QuestionBody'])
         row['AnswerScore'] = log2(1 + row['AnswerScore']) if row['AnswerScore'] > 0 else -1
 
-        if "```" in row['AnswerBody']:
-            print(re.findall(REG_CODE_BLOCK, row['AnswerBody']))
+        # if "```" in row['AnswerBody']:
+        #     print(re.findall(REG_CODE_BLOCK, row['AnswerBody']))
         # if "```" in row['QuestionBody']:
         #     print(re.findall(REG_CODE_BLOCK, row['QuestionBody']))
 
         data_sft.append({
-            'qid': row['QuestionId'],
+            'question_id': row['QuestionId'],
             'question': row['QuestionBody'],
-            'response_j': row['AnswerBody'],
-            'answer_j_score': row['AnswerScore'],
+
+            'answer_id': row['AnswerId'],
+            'answer': row['AnswerBody'],
+            'answer_score': row['AnswerScore'],
         })
 
         if current_score != row['AnswerScore']:
@@ -72,11 +47,11 @@ def process_question(df_group):
         if len(prev_rows[prev_score]) and prev_score != row['AnswerScore']:
             for prev_row in prev_rows[prev_score]:
                 rlhf_d = {
-                    'qid': row['QuestionId'],
-
+                    'answer_j_id': row['AnswerId'],
                     'answer_j': row['AnswerBody'],
                     'answer_j_score': row['AnswerScore'],
 
+                    'answer_k_id': row['AnswerId'],
                     'answer_k': prev_row['AnswerBody'],
                     'answer_k_score': prev_row['AnswerScore'],
                 }
@@ -84,9 +59,19 @@ def process_question(df_group):
 
         prev_rows[row['AnswerScore']].append(row)
 
-    # print(row['QuestionId'])
-
     return data_sft, data_rlhf
+
+
+def export_for_labelling(data: list[dict], path: str, id_key: str = 'answer_id'):
+    data_json = []
+    for d in data:
+        data_json.append({
+            'id': d[id_key],
+            'data': d
+        })
+
+    with open(path, 'w') as f:
+        json.dump(data_json, f)
 
 
 if __name__ == '__main__':
@@ -94,46 +79,57 @@ if __name__ == '__main__':
     parser.add_argument('--branch', type=str, default='main', help='Dataset version for HuggingFace')
     parser.add_argument('--data-file', dest='data_file', type=str, default='data/QueryResults.csv', help='Raw data file')
     parser.add_argument('--split', type=str, default='train', help='Dataset split type')
+    parser.add_argument('--n_jobs', type=int, default=1, help='Run N parallel jobs')
+    parser.add_argument('--export-for-labeling',  dest='export_for_labeling', action='store_true', help='Export data for labelling')
+    parser.add_argument('--push-huggingface', dest='push_huggingface', action='store_true', help='Push to HuggingFace')
     args = parser.parse_args()
 
     df = pd.read_csv(args.data_file)
-    # print(df.columns)
-    # print(df.describe())
+    logger.debug('Found columns: %s', df.columns)
+    logger.debug(df.describe())
     df_grouped = df.sort_values(['QuestionId', 'AnswerScore'], ascending=True).groupby('QuestionId')
-    # print(df_grouped[['QuestionId', 'AnswerId', 'AnswerScore']].head(10))
+    logger.debug(df_grouped[['QuestionId', 'AnswerId', 'AnswerScore']].head(10))
 
     logger.info('Data preprocessing...')
     data_sft = []
     data_rlhf = []
     start = time.time()
 
-    # Parallel
-    out = Parallel(n_jobs=24, backend='multiprocessing')(
-        delayed(process_question)(df_group) for group_name, df_group in df_grouped
-    )
-    for out_i in out:
-        data_sft.extend(out_i[0])
-        data_rlhf.extend(out_i[1])
-
-    # Sequential
-    # for group_name, df_group in df_grouped:
-    #     out = process_question(df_group)
-    #     data_sft.extend(out[0])
-    #     data_rlhf.extend(out[1])
+    if args.n_jobs > 1:
+        # Parallel
+        out = Parallel(n_jobs=24, backend='multiprocessing')(
+            delayed(process_record)(df_group) for group_name, df_group in df_grouped
+        )
+        for out_i in out:
+            data_sft.extend(out_i[0])
+            data_rlhf.extend(out_i[1])
+    else:
+        # Sequential
+        for group_name, df_group in df_grouped:
+            out = process_record(df_group)
+            data_sft.extend(out[0])
+            data_rlhf.extend(out[1])
 
     logger.info('Done: %0.5f ms', time.time() - start)
 
     logger.info('Data SFT %d samples', len(data_sft))
     logger.info('Data RLHF %d samples', len(data_rlhf))
 
-    # logger.info('Uploading sft dataset...')
-    # push_dataset("asavanovich/sft_dataset", data_sft, branch=args.branch, split=args.split)
-    # logger.info('Done')
-    #
-    # logger.info('Uploading reward dataset...')
-    # push_dataset("asavanovich/reward_dataset", data_rlhf[:len(data_rlhf)//2], branch=args.branch, split=args.split)
-    # logger.info('Done')
-    #
-    # logger.info('Uploading rlhf dataset...')
-    # push_dataset("asavanovich/rlhf_dataset", data_rlhf[len(data_rlhf)//2:], branch=args.branch, split=args.split)
-    # logger.info('Done')
+    if args.export_for_labeling:
+        logger.info('Export for dataset labelling...')
+        export_for_labelling(data_sft, 'data/sft_for_labelling.json')
+        export_for_labelling(data_rlhf, 'data/rlhf_for_labelling.json', id_key='answer_j_id')
+        logger.info('Done')
+
+    if args.push_huggingface:
+        logger.info('Uploading sft dataset...')
+        push_dataset("asavanovich/sft_dataset", data_sft, branch=args.branch, split=args.split)
+        logger.info('Done')
+
+        logger.info('Uploading reward dataset...')
+        push_dataset("asavanovich/reward_dataset", data_rlhf[:len(data_rlhf)//2], branch=args.branch, split=args.split)
+        logger.info('Done')
+
+        logger.info('Uploading rlhf dataset...')
+        push_dataset("asavanovich/rlhf_dataset", data_rlhf[len(data_rlhf)//2:], branch=args.branch, split=args.split)
+        logger.info('Done')
