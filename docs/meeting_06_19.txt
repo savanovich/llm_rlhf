@@ -1,0 +1,25 @@
+DATA COLLECTION
+    scrapy
+    Requests
+    Beautiful Soup
+    Selenium
+EDA
+    # of code tags
+DATA VERSIONING
+    wandb, CoreML, DVC, mlflow
+DATA PREPROCESSING
+    either Spelling Correction or keystroke  mistake augmentation
+    Annomanization
+    remove smiles
+    Remove meaningless sentences
+LABELING
+    Label Studio
+    Haystack Annotation Tool
+    Brat
+AUGMENTATION
+    Back Translation Augmenter
+    Random case of document
+    Random space inserter/remover augmenter
+    Spelling Augmenter
+    Swap sentences
+    Exclude duplicate sentences
