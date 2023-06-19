@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import time
 from collections import defaultdict
 from math import log2
@@ -8,11 +9,12 @@ import pandas as pd
 from joblib import Parallel, delayed
 from textblob import TextBlob
 
-from finetuning.training import augment
-from logger_config import *
+from configs.logger import setup_log
+from utils.augmentation import augment
 from utils.hugging_face import push_dataset
 from utils.markdown import html2md, apply_transformation_for_non_code
 
+setup_log()
 logger = logging.getLogger('preprocessing')
 
 
@@ -29,23 +31,20 @@ def process_record(df_group):
         row['AnswerBody'] = html2md(row['AnswerBody'])
         row['AnswerScore'] = log2(1 + row['AnswerScore']) if row['AnswerScore'] > 0 else -1
 
-        row['QuestionBody'] = apply_transformation_for_non_code(row['QuestionBody'], functions=[
-            # spelling correction
-            lambda s: str(TextBlob(s).correct())
-        ])
+        # row['QuestionBody'] = apply_transformation_for_non_code(row['QuestionBody'], functions=[
+        #     # spelling correction
+        #     lambda s: str(TextBlob(s).correct())
+        # ])
 
-        print('='*10, 'ORIGINAL')
-        print(row['AnswerBody'])
-        row['AnswerBody'] = augment(row['AnswerBody'])
-        print('='*10, 'AUGMENTED')
-        print(row['AnswerBody'])
-        print('='*10, 'PREPROCESSING')
-        row['AnswerBody'] = apply_transformation_for_non_code(row['AnswerBody'], functions=[
-            # spelling correction
-            lambda s: str(TextBlob(s).correct())
-        ])
-        print(row['AnswerBody'])
-        print('='*100)
+        # print('='*100)
+        # print('='*10, 'ORIGINAL\n', row['AnswerBody'])
+        # row['AnswerBody'] = augment(row['AnswerBody'])
+        # print('='*10, 'AUGMENTED\n', row['AnswerBody'])
+        # row['AnswerBody'] = apply_transformation_for_non_code(row['AnswerBody'], functions=[
+        #     # spelling correction
+        #     lambda s: str(TextBlob(s).correct())
+        # ])
+        # print('='*10, 'PREPROCESSING\n', row['AnswerBody'])
 
         data_sft.append({
             'question_id': row['QuestionId'],
@@ -99,7 +98,7 @@ if __name__ == '__main__':
     parser.add_argument('--push-huggingface', dest='push_huggingface', action='store_true', help='Push to HuggingFace')
     args = parser.parse_args()
 
-    df = pd.read_csv(args.data_file)[:10]
+    df = pd.read_csv(args.data_file)#[:10]
     logger.debug('Imported columns: %s', df.columns)
     # logger.debug(df.describe())
     df_grouped = df.sort_values(['QuestionId', 'AnswerScore'], ascending=True).groupby('QuestionId')

@@ -1,14 +1,11 @@
+import logging
 import os
 
 import addict
-import augmenty
-import nlpaug.augmenter.word as naw
-import spacy
 import torch
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_int8_training
 from torch.utils.data import IterableDataset
-from tqdm import tqdm
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -16,19 +13,12 @@ from transformers import (
     TrainingArguments
 )
 
-from utils.markdown import apply_transformation_for_non_code
+from configs.logger import setup_log
+from utils.augmentation import augment
+from utils.training import chars_token_ratio, prepare_sample_text
 
-nlp = spacy.load("en_core_web_md")
-keystroke_error_augmenter = augmenty.load("keystroke_error_v1", level=0.01)
-char_swap_augmenter = augmenty.load("char_swap_v1", level=0.01)
-duplicate_token_augmenter = augmenty.load("duplicate_token_v1", level=0.01)
-
-combined_augmenter = augmenty.combine([keystroke_error_augmenter, char_swap_augmenter, duplicate_token_augmenter])
-
-
-aug = naw.BackTranslationAug(
-    from_model_name='Helsinki-NLP/opus-mt-en-de',
-    to_model_name='Helsinki-NLP/opus-mt-de-en')
+setup_log()
+logger = logging.getLogger('sft_training')
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -36,8 +26,9 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 cfg = addict.Dict(
     {
-        "dataset_name": "lvwerra/stack-exchange-paired",
-        "max_steps": 4000,
+        "dataset_name": "asavanovich/sft_dataset",
+        # "max_steps": 4000,
+        "max_steps": 10,
         "batch_size": 2,
         "learning_rate": 1e-4,
         "gradient_accumulation_steps": 1,
@@ -47,18 +38,18 @@ cfg = addict.Dict(
         "weight_decay": 0.05,
         "num_warmup_steps": 100,
         ##########
-        "subset": "data/finetune",
+        # "subset": "data/finetune",
         "split": "train",
-        "size_valid_set": 4000,
-        "shuffle_buffer": 5000,
+        "size_valid_set": 1000,
+        "shuffle_buffer": 1000,
         "seq_length": 1024,
         "local_rank": 0,
         "seed": 0,
         "num_workers": None,
         "output_dir": "./checkpoints",
         "log_freq": 1,
-        "eval_freq": 1000,
-        "save_freq": 1000,
+        "eval_freq": 1,
+        "save_freq": 1,
     }
 )
 
@@ -123,47 +114,18 @@ class ConstantLengthDataset(IterableDataset):
                     }
 
 
-def augment(text):
-    return apply_transformation_for_non_code(text, functions=[
-        lambda s: list(augmenty.texts([s, ], augmenter=combined_augmenter, nlp=nlp))[0],
-        # lambda s: aug.augment(s)[0],
-    ])
-
-
 # TODO: check not cached
-def prepare_sample_text(example):
-    question = augment(example['question'])
-    response = augment(example['response_j'])
-
-    text = f"Question: {question}\n\nAnswer: {response}"
-    return text
-
-
-def chars_token_ratio(dataset, tokenizer, nb_examples=400):
-    """
-    Estimate the average number of characters per token in the dataset.
-    """
-    total_characters, total_tokens = 0, 0
-    for _, example in tqdm(zip(range(nb_examples), iter(dataset)), total=nb_examples):
-        text = prepare_sample_text(example)
-        total_characters += len(text)
-        if tokenizer.is_fast:
-            total_tokens += len(tokenizer(text).tokens())
-        else:
-            total_tokens += len(tokenizer.tokenize(text))
-
-    return total_characters / total_tokens
 
 
 def create_datasets(tokenizer, cfg):
     dataset = load_dataset(
         cfg.dataset_name,
-        data_dir=cfg.subset,
+        # data_dir=cfg.subset,
         split=cfg.split,
         use_auth_token=True,
         num_proc=None,
     )
-    dataset = dataset.train_test_split(test_size=0.005, seed=cfg.seed)
+    dataset = dataset.train_test_split(test_size=0.1, seed=cfg.seed)
     train_data = dataset["train"]
     valid_data = dataset["test"]
     print(f"Size of the train set: {len(train_data)}. Size of the validation set: {len(valid_data)}")
@@ -194,7 +156,6 @@ if __name__ == '__main__':
         "EleutherAI/gpt-neo-1.3B",
         load_in_8bit=True,
         device_map={'': torch.cuda.current_device()}
-        # device_map="auto"
     )
 
     model = prepare_model_for_int8_training(model)
@@ -242,6 +203,3 @@ if __name__ == '__main__':
 
     print("Saving last checkpoint of the model")
     model.save_pretrained(os.path.join(cfg.output_dir, "final_checkpoint/"))
-
-
-

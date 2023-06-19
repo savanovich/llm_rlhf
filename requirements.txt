@@ -9,3 +9,5 @@ transformers
 nlpaug
 augmenty
 pynvml
+textblob
+sentencepiece

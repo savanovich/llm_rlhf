@@ -3,3 +3,5 @@
 /models/sft-4000steps/
 /tmp/
 /.ipynb_checkpoints/
+/checkpoints/
+/data/*.json
